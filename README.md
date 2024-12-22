@@ -205,8 +205,7 @@ Este software es para fines educativos y de investigación únicamente. El tradi
 ## 📞 Soporte
 
 - Crear un issue
-- Unirse a nuestro [Discord](https://discord.gg/tu-servidor)
-- Seguir en [Twitter](https://twitter.com/tu-cuenta)
+- Seguir en [Twitter](https://twitter.com/0xnavarro)
 
 ## 🙏 Agradecimientos
 
