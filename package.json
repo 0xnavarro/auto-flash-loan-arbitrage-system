@@ -1,0 +1,25 @@
+{
+  "name": "flashloans",
+  "version": "1.0.0",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "description": "",
+  "devDependencies": {
+    "@nomicfoundation/hardhat-toolbox": "^5.0.0",
+    "@openzeppelin/contracts": "^5.1.0",
+    "dotenv": "^16.4.7",
+    "hardhat": "^2.22.17"
+  },
+  "dependencies": {
+    "@aave/core-v3": "^1.19.3",
+    "@uniswap/v2-core": "^1.0.1",
+    "@uniswap/v2-periphery": "^1.1.0-beta.0",
+    "colors": "^1.4.0"
+  }
+}
