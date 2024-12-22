@@ -38,8 +38,8 @@ Sistema automatizado para ejecutar arbitrajes utilizando flash loans en múltipl
 
 1. Clonar el repositorio:
 ```bash
-git clone https://github.com/tu-usuario/flash-loans-arbitrage.git
-cd flash-loans-arbitrage
+git clone https://github.com/0xnavarro/flash-loans-arbitrage-system.git
+cd flash-loans-arbitrage-system
 ```
 
 2. Instalar dependencias:
