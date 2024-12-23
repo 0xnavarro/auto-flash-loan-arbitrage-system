@@ -215,3 +215,13 @@ Este software es para fines educativos y de investigación únicamente. El tradi
 - [Stargate Finance](https://stargate.finance/)
 - [LayerZero](https://layerzero.network/)
 - [OpenZeppelin](https://openzeppelin.com/)
+
+## 📄 Contratos Desplegados
+
+### Arbitrum
+- FlashLoanArbitrage: `0xCB13224F575a4933028714B3C8ADB33cF08B1772`
+- Verificado en [Arbiscan](https://arbiscan.io/address/0xCB13224F575a4933028714B3C8ADB33cF08B1772)
+
+### Base
+- FlashLoanArbitrage: `0x40a4eB7B2c536203E7CF4c1441C088E3A4195747`
+- Verificado en [Basescan](https://basescan.io/address/0x40a4eB7B2c536203E7CF4c1441C088E3A4195747)

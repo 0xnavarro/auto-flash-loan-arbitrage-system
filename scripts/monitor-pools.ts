@@ -1,211 +1,209 @@
 import { ethers } from "hardhat";
-import { BigNumber } from "@ethersproject/bignumber";
-import { formatEther, parseEther, formatUnits } from "@ethersproject/units";
+import { ARBITRUM_CONFIG, type NetworkConfig } from "../config/arbitrage.config";
+import { FlashLoanArbitrage__factory, IUniswapV3Pool__factory } from "../typechain-types";
 
-interface TokenConfig {
-  WETH?: string;
-  WBNB?: string;
-  USDC?: string;
-  USDT?: string;
-  BUSD?: string;
+interface PoolInfo {
+    address: string;
+    dex: string;
+    price: number;          // Precio en términos del token1 (ej: USDC por WETH)
+    liquidityUSD: number;   // Liquidez en USD
+    fee: number;           // Fee en porcentaje (ej: 0.05)
+    token0: string;
+    token1: string;
 }
 
-interface NetworkConfig {
-  name: string;
-  rpc: string;
-  dexs: {
-    [key: string]: string;
-  };
-  tokens: TokenConfig;
+interface ArbitrageOpportunity {
+    poolBuy: PoolInfo;
+    poolSell: PoolInfo;
+    priceDifference: number;
+    percentageDiff: number;
+    optimalAmount: number;
+    estimatedProfit: number;
+    estimatedGasCost: number;
+    netProfit: number;
 }
 
-// Configuración de DEXs y tokens por cadena
-const config: Record<string, NetworkConfig> = {
-  arbitrum: {
-    name: "Arbitrum",
-    rpc: "https://arb1.arbitrum.io/rpc",
-    dexs: {
-      uniswapV3: "0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45", // Router
-      sushiswap: "0x1b02dA8Cb0d097eB8D57A175b88c7D8b47997506"
-    },
-    tokens: {
-      WETH: "0x82aF49447D8a07e3bd95BD0d56f35241523fBab1",
-      USDC: "0xFF970A61A04b1cA14834A43f5dE4533eBDDB5CC8",
-      USDT: "0xFd086bC7CD5C481DCC9C85ebE478A1C0b69FCbb9"
-    }
-  },
-  base: {
-    name: "Base",
-    rpc: "https://mainnet.base.org",
-    dexs: {
-      baseswap: "0x327Df1E6de05895d2ab08513aaDD9313Fe505d86",
-      uniswapV3: "0x2626664c2603336E57B271c5C0b26F421741e481"
-    },
-    tokens: {
-      WETH: "0x4200000000000000000000000000000000000006",
-      USDC: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
-    }
-  },
-  bsc: {
-    name: "BSC",
-    rpc: "https://bsc-dataseed.binance.org",
-    dexs: {
-      pancakeswap: "0x10ED43C718714eb63d5aA57B78B54704E256024E",
-      biswap: "0x3a6d8cA21D1CF76F653A67577FA0D27453350dD8"
-    },
-    tokens: {
-      WBNB: "0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c",
-      BUSD: "0xe9e7CEA3DedcA5984780Bafc599bD69ADd087D56",
-      USDT: "0x55d398326f99059fF775485246999027B3197955"
-    }
-  }
-};
-
-// Función para obtener el precio de un token en un DEX
-async function getPriceFromDex(
-  dexAddress: string,
-  tokenIn: string,
-  tokenOut: string,
-  amountIn: string
-): Promise<string> {
-  try {
-    // Primero intentamos con la interfaz de Uniswap V3
-    try {
-      const quoter = await ethers.getContractAt("IQuoter", dexAddress);
-      const amountOut = await quoter.quoteExactInputSingle(
-        tokenIn,
-        tokenOut,
-        3000,
-        amountIn,
-        0
-      );
-      return amountOut.toString();
-    } catch {
-      // Si falla, intentamos con la interfaz de Uniswap V2
-      const router = await ethers.getContractAt("IUniswapV2Router02", dexAddress);
-      const path = [tokenIn, tokenOut];
-      const amounts = await router.getAmountsOut(amountIn, path);
-      return amounts[1].toString();
-    }
-  } catch (error) {
-    console.error(`Error getting price from ${dexAddress}:`, error);
-    return "0";
-  }
-}
-
-// Función para calcular el beneficio potencial
-function calculateProfit(
-  buyPrice: string,
-  sellPrice: string,
-  amount: string
-): {profitUSD: number; profitPercentage: number} {
-  try {
-    const buyPriceBN = BigNumber.from(buyPrice || "0");
-    const sellPriceBN = BigNumber.from(sellPrice || "0");
-    const amountBN = BigNumber.from(amount || "0");
+async function monitorPools(network: NetworkConfig) {
+    console.log(`Iniciando monitorización en ${network.name}...`);
     
-    if (buyPriceBN.eq(0) || sellPriceBN.eq(0)) return { profitUSD: 0, profitPercentage: 0 };
+    const [signer] = await ethers.getSigners();
+    console.log(`Usando cuenta: ${signer.address}`);
     
-    const cost = amountBN.mul(buyPriceBN).div(parseEther("1"));
-    const revenue = amountBN.mul(sellPriceBN).div(parseEther("1"));
-    const profit = revenue.sub(cost);
-    
-    const profitUSD = parseFloat(formatUnits(profit, 6)); // Asumiendo USDC/USDT con 6 decimales
-    const profitPercentage = (profitUSD / parseFloat(formatUnits(cost, 6))) * 100;
-    
-    return { profitUSD, profitPercentage };
-  } catch (error) {
-    console.error("Error calculating profit:", error);
-    return { profitUSD: 0, profitPercentage: 0 };
-  }
-}
+    const flashLoanContract = FlashLoanArbitrage__factory.connect(
+        network.flashLoanContract,
+        signer
+    );
 
-// Función para obtener el token estable de una red
-function getStablecoin(tokens: TokenConfig): string {
-  return tokens.USDC || tokens.USDT || tokens.BUSD || "";
-}
-
-// Función para obtener el token base de una red
-function getBaseToken(tokens: TokenConfig): string {
-  return tokens.WETH || tokens.WBNB || "";
-}
-
-// Función principal de monitoreo
-async function monitorPrices() {
-  const networks = Object.keys(config);
-  const amountIn = parseEther("1").toString(); // 1 token
-
-  for (const network of networks) {
-    const networkConfig = config[network];
-    console.log(`\n📊 Monitoring ${networkConfig.name}`);
-    
-    const { dexs, tokens } = networkConfig;
-    const stablecoin = getStablecoin(tokens);
-    const baseToken = getBaseToken(tokens);
-
-    if (!stablecoin || !baseToken) {
-      console.log(`Skipping ${networkConfig.name} - Missing required tokens`);
-      continue;
-    }
-
-    // Comparar precios entre DEXs
-    const dexEntries = Object.entries(dexs);
-    for (let i = 0; i < dexEntries.length; i++) {
-      for (let j = i + 1; j < dexEntries.length; j++) {
-        const [dex1Name, dex1Address] = dexEntries[i];
-        const [dex2Name, dex2Address] = dexEntries[j];
-
-        console.log(`\nChecking ${dex1Name} vs ${dex2Name}...`);
-
-        const price1 = await getPriceFromDex(dex1Address, baseToken, stablecoin, amountIn);
-        const price2 = await getPriceFromDex(dex2Address, baseToken, stablecoin, amountIn);
-
-        if (price1 === "0" || price2 === "0") {
-          console.log("Could not get prices from one or both DEXs");
-          continue;
+    function getTokenSymbol(address: string): string {
+        for (const [symbol, token] of Object.entries(network.tokens)) {
+            if (token.address.toLowerCase() === address.toLowerCase()) {
+                return symbol;
+            }
         }
-
-        const { profitUSD, profitPercentage } = calculateProfit(price1, price2, amountIn);
-
-        console.log(`
-          ${baseToken.slice(-4)} Prices:
-          ${dex1Name}: $${formatUnits(price1, 6)}
-          ${dex2Name}: $${formatUnits(price2, 6)}
-          Difference: $${Math.abs(profitUSD).toFixed(2)} (${Math.abs(profitPercentage).toFixed(2)}%)
-        `);
-
-        if (profitPercentage > 0.5) {
-          console.log(`
-            💰 Arbitrage Opportunity Found!
-            Chain: ${networkConfig.name}
-            Buy from: ${dex1Name}
-            Sell to: ${dex2Name}
-            Profit: $${profitUSD.toFixed(2)} (${profitPercentage.toFixed(2)}%)
-            Required amount: 1 ${baseToken.slice(-4)}
-          `);
-
-          // Aquí podríamos llamar al contrato de arbitraje
-          // await executeArbitrage(network, dex1Address, dex2Address, baseToken, stablecoin, amountIn);
-        }
-      }
+        return address.slice(0, 6) + "..." + address.slice(-4);
     }
-  }
+
+    function formatUSD(amount: number): string {
+        return new Intl.NumberFormat('en-US', {
+            style: 'currency',
+            currency: 'USD',
+            minimumFractionDigits: 2,
+            maximumFractionDigits: 2
+        }).format(amount);
+    }
+
+    async function getPoolInfo(
+        poolAddress: string,
+        dexName: string,
+        token0Address: string,
+        token1Address: string
+    ): Promise<PoolInfo | null> {
+        try {
+            const pool = IUniswapV3Pool__factory.connect(poolAddress, signer);
+            const [slot0, liquidity, fee] = await Promise.all([
+                pool.slot0(),
+                pool.liquidity(),
+                pool.fee()
+            ]);
+
+            const token0Symbol = getTokenSymbol(token0Address);
+            const token1Symbol = getTokenSymbol(token1Address);
+            const decimals0 = network.tokens[token0Symbol].decimals;
+            const decimals1 = network.tokens[token1Symbol].decimals;
+
+            // Calcular precio usando sqrtPriceX96
+            const sqrtPriceX96 = slot0.sqrtPriceX96;
+            const price = Number(sqrtPriceX96) * Number(sqrtPriceX96) * (10 ** (decimals1 - decimals0)) / (2 ** 192);
+
+            // Estimar liquidez en USD (asumiendo precio de ETH = $2300 para el cálculo)
+            const ethPrice = 2300;
+            let liquidityUSD = 0;
+
+            if (token1Symbol === 'USDC' || token1Symbol === 'USDT') {
+                liquidityUSD = Number(liquidity) * price;
+            } else if (token0Symbol === 'WETH') {
+                liquidityUSD = Number(liquidity) * ethPrice;
+            } else if (token1Symbol === 'WETH') {
+                liquidityUSD = Number(liquidity) * price * ethPrice;
+            }
+
+            return {
+                address: poolAddress,
+                dex: dexName,
+                price,
+                liquidityUSD,
+                fee: Number(fee) / 10000, // Convertir a porcentaje
+                token0: token0Address,
+                token1: token1Address
+            };
+        } catch (error) {
+            console.error(`Error obteniendo datos de la pool ${poolAddress}:`, error);
+            return null;
+        }
+    }
+
+    function calculateArbitrageOpportunity(poolA: PoolInfo, poolB: PoolInfo): ArbitrageOpportunity | null {
+        const FLASH_LOAN_FEE = 0.0005; // 0.05%
+        const GAS_COST_USD = 15; // Estimado en USD
+
+        // Identificar pool de compra y venta
+        const [poolBuy, poolSell] = poolA.price < poolB.price ? [poolA, poolB] : [poolB, poolA];
+        const priceDiff = poolSell.price - poolBuy.price;
+        const avgPrice = (poolSell.price + poolBuy.price) / 2;
+        const percentageDiff = (priceDiff / avgPrice) * 100;
+
+        // Calcular cantidad óptima basada en la liquidez disponible
+        const maxImpact = 0.005; // 0.5% máximo impacto en precio
+        const optimalAmount = Math.min(
+            poolBuy.liquidityUSD * maxImpact / poolBuy.price,
+            poolSell.liquidityUSD * maxImpact / poolSell.price,
+            20 // Máximo 20 ETH por operación
+        );
+
+        // Calcular beneficio estimado
+        const totalFees = FLASH_LOAN_FEE + poolBuy.fee + poolSell.fee;
+        const estimatedProfit = optimalAmount * priceDiff * (1 - totalFees);
+        const netProfit = estimatedProfit - GAS_COST_USD;
+
+        if (netProfit <= 0) return null;
+
+        return {
+            poolBuy,
+            poolSell,
+            priceDifference: priceDiff,
+            percentageDiff,
+            optimalAmount,
+            estimatedProfit,
+            estimatedGasCost: GAS_COST_USD,
+            netProfit
+        };
+    }
+
+    async function displayArbitrageOpportunity(opportunity: ArbitrageOpportunity) {
+        const token0Symbol = getTokenSymbol(opportunity.poolBuy.token0);
+        const token1Symbol = getTokenSymbol(opportunity.poolBuy.token1);
+
+        console.log(`\n${new Date().toISOString()}`);
+        console.log(`Par: ${token0Symbol}/${token1Symbol}`);
+        
+        console.log(`\nPool de Compra (${opportunity.poolBuy.dex}):`);
+        console.log(`Precio: ${formatUSD(opportunity.poolBuy.price)}`);
+        console.log(`Liquidez: ${formatUSD(opportunity.poolBuy.liquidityUSD)}`);
+        console.log(`Fee: ${opportunity.poolBuy.fee}%`);
+
+        console.log(`\nPool de Venta (${opportunity.poolSell.dex}):`);
+        console.log(`Precio: ${formatUSD(opportunity.poolSell.price)}`);
+        console.log(`Liquidez: ${formatUSD(opportunity.poolSell.liquidityUSD)}`);
+        console.log(`Fee: ${opportunity.poolSell.fee}%`);
+
+        console.log(`\nOportunidad de Arbitraje:`);
+        console.log(`Diferencia: ${formatUSD(opportunity.priceDifference)} (${opportunity.percentageDiff.toFixed(4)}%)`);
+        console.log(`Cantidad óptima: ${opportunity.optimalAmount.toFixed(4)} ${token0Symbol}`);
+        console.log(`Beneficio bruto estimado: ${formatUSD(opportunity.estimatedProfit)}`);
+        console.log(`Costo de gas estimado: ${formatUSD(opportunity.estimatedGasCost)}`);
+        console.log(`Beneficio neto estimado: ${formatUSD(opportunity.netProfit)}`);
+    }
+
+    // Monitorización continua
+    while (true) {
+        try {
+            for (let i = 0; i < network.pools.length; i++) {
+                for (let j = i + 1; j < network.pools.length; j++) {
+                    const poolA = network.pools[i];
+                    const poolB = network.pools[j];
+                    
+                    if (
+                        (poolA.token0 === poolB.token0 && poolA.token1 === poolB.token1) ||
+                        (poolA.token0 === poolB.token1 && poolA.token1 === poolB.token0)
+                    ) {
+                        const poolInfoA = await getPoolInfo(poolA.address, poolA.dex, poolA.token0, poolA.token1);
+                        const poolInfoB = await getPoolInfo(poolB.address, poolB.dex, poolB.token0, poolB.token1);
+                        
+                        if (poolInfoA && poolInfoB) {
+                            const opportunity = calculateArbitrageOpportunity(poolInfoA, poolInfoB);
+                            
+                            if (opportunity && opportunity.netProfit > 100) {
+                                await displayArbitrageOpportunity(opportunity);
+                            }
+                        }
+                    }
+                }
+            }
+            
+            await new Promise(resolve => setTimeout(resolve, 10000));
+            
+        } catch (error) {
+            console.error("Error en la monitorización:", error);
+            await new Promise(resolve => setTimeout(resolve, 30000));
+        }
+    }
 }
 
-// Función principal
 async function main() {
-  while (true) {
-    const now = new Date();
-    console.log(`\n⏰ ${now.toLocaleTimeString()} - Nueva iteración de monitoreo`);
-    
-    await monitorPrices();
-    
-    // Esperar 5 segundos antes de la siguiente iteración
-    await new Promise(resolve => setTimeout(resolve, 5000));
-  }
+    await monitorPools(ARBITRUM_CONFIG);
 }
 
 main().catch((error) => {
-  console.error(error);
-  process.exitCode = 1;
+    console.error(error);
+    process.exitCode = 1;
 }); 
