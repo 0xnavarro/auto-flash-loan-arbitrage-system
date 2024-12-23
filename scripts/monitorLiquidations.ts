@@ -19,10 +19,16 @@ const WETH_ADDRESS = "0x82aF49447D8a07e3bd95BD0d56f35241523fBab1";
 
 // Función principal de monitoreo
 async function monitorLiquidations() {
-    // Conectar al proveedor (usar tu propio endpoint de Infura/Alchemy)
-    const provider = new ethers.providers.JsonRpcProvider(
-        "TU_URL_DE_RPC_AQUI"
-    );
+    // Verificar que existe la API key
+    if (!process.env.ALCHEMY_API_KEY) {
+        throw new Error("ALCHEMY_API_KEY no está definida en el archivo .env");
+    }
+
+    // Construir la URL de RPC completa
+    const RPC_URL = `https://arb-mainnet.g.alchemy.com/v2/${process.env.ALCHEMY_API_KEY}`;
+
+    // Conectar al proveedor
+    const provider = new ethers.providers.JsonRpcProvider(RPC_URL);
 
     // Conectar al contrato de Aave
     const aavePool = new ethers.Contract(

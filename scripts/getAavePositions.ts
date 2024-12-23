@@ -1,154 +1,130 @@
-import { request, gql } from 'graphql-request';
+import { request } from 'graphql-request';
+import * as dotenv from 'dotenv';
+
+dotenv.config();
 
 // Endpoint de The Graph para Aave v3 en Arbitrum
 const AAVE_SUBGRAPH = 'https://api.thegraph.com/subgraphs/name/aave/protocol-v3-arbitrum';
 
-// Query para obtener usuarios con posiciones
-const GET_USERS_QUERY = gql`
-  query GetUsers($first: Int!, $skip: Int!) {
+// Query para obtener usuarios con posiciones en riesgo
+const GET_RISKY_POSITIONS = `
+  query GetRiskyPositions($healthFactor: BigDecimal!, $minDebt: BigInt!) {
     users(
-      first: $first
-      skip: $skip
-      where: { borrowedReservesCount_gt: 0 }
-      orderBy: borrowedReservesCount
+      where: {
+        borrowedReservesCount_gt: 0,
+        totalDebtBase_gt: $minDebt
+      }
+      first: 1000
+      orderBy: totalDebtBase
       orderDirection: desc
     ) {
       id
+      totalCollateralBase
+      totalDebtBase
+      healthFactor
       borrowedReservesCount
-      collateralReserve: reserves(where: { currentATokenBalance_gt: 0 }) {
+      reserves(where: { currentATokenBalance_gt: 0 }) {
+        reserve {
+          symbol
+          underlyingAsset
+        }
         currentATokenBalance
-        reserve {
-          symbol
-          price {
-            priceInEth
-          }
-        }
-      }
-      borrowReserve: reserves(where: { currentTotalDebt_gt: 0 }) {
-        currentTotalDebt
-        reserve {
-          symbol
-          price {
-            priceInEth
-          }
-        }
+        currentVariableDebt
+        currentStableDebt
       }
     }
   }
 `;
 
-// Función para calcular el health factor aproximado
-function calculateHealthFactor(collateralUSD: number, debtUSD: number, liquidationThreshold = 0.825) {
-    if (debtUSD === 0) return Infinity;
-    return (collateralUSD * liquidationThreshold) / debtUSD;
+interface Reserve {
+  reserve: {
+    symbol: string;
+    underlyingAsset: string;
+  };
+  currentATokenBalance: string;
+  currentVariableDebt: string;
+  currentStableDebt: string;
 }
 
-async function getAllPositions() {
-    const positions: any[] = [];
-    const batchSize = 1000;
-    let skip = 0;
-    let hasMore = true;
+interface User {
+  id: string;
+  totalCollateralBase: string;
+  totalDebtBase: string;
+  healthFactor: string;
+  borrowedReservesCount: number;
+  reserves: Reserve[];
+}
 
-    console.log('Obteniendo posiciones de Aave...');
+interface SubgraphResponse {
+  users: User[];
+}
 
-    while (hasMore) {
-        try {
-            const data: any = await request(AAVE_SUBGRAPH, GET_USERS_QUERY, {
-                first: batchSize,
-                skip: skip
-            });
+async function getRiskyPositions() {
+  try {
+    console.log('Buscando posiciones en riesgo...');
 
-            const users = data.users;
-            
-            if (users.length < batchSize) {
-                hasMore = false;
-            }
+    const variables = {
+      healthFactor: '1.1', // Buscar posiciones con HF < 1.1
+      minDebt: '1000000000000000000' // Mínimo 1 ETH en deuda (o equivalente)
+    };
 
-            // Procesar cada usuario
-            for (const user of users) {
-                let totalCollateralUSD = 0;
-                let totalDebtUSD = 0;
+    const data = await request<SubgraphResponse>(
+      AAVE_SUBGRAPH,
+      GET_RISKY_POSITIONS,
+      variables
+    );
 
-                // Calcular colateral total
-                for (const collateral of user.collateralReserve) {
-                    const priceInEth = Number(collateral.reserve.price.priceInEth);
-                    const balance = Number(collateral.currentATokenBalance);
-                    totalCollateralUSD += balance * priceInEth;
-                }
+    console.log(`Encontradas ${data.users.length} posiciones en riesgo`);
 
-                // Calcular deuda total
-                for (const debt of user.borrowReserve) {
-                    const priceInEth = Number(debt.reserve.price.priceInEth);
-                    const debtAmount = Number(debt.currentTotalDebt);
-                    totalDebtUSD += debtAmount * priceInEth;
-                }
+    for (const user of data.users) {
+      const healthFactor = parseFloat(user.healthFactor);
+      const totalCollateralUSD = parseFloat(user.totalCollateralBase) / 1e8; // Aave usa 8 decimales para USD
+      const totalDebtUSD = parseFloat(user.totalDebtBase) / 1e8;
 
-                // Calcular health factor aproximado
-                const healthFactor = calculateHealthFactor(totalCollateralUSD, totalDebtUSD);
-
-                // Guardar posiciones en riesgo (HF < 1.1)
-                if (healthFactor < 1.1 && healthFactor > 0) {
-                    positions.push({
-                        address: user.id,
-                        collateralUSD: totalCollateralUSD,
-                        debtUSD: totalDebtUSD,
-                        healthFactor: healthFactor,
-                        borrowedReservesCount: user.borrowedReservesCount
-                    });
-
-                    console.log(`
-                    Posición en riesgo encontrada:
-                    Dirección: ${user.id}
-                    Colateral: $${totalCollateralUSD.toFixed(2)}
-                    Deuda: $${totalDebtUSD.toFixed(2)}
-                    Health Factor: ${healthFactor.toFixed(4)}
-                    Número de préstamos: ${user.borrowedReservesCount}
-                    `);
-                }
-            }
-
-            skip += users.length;
-            console.log(`Procesados ${skip} usuarios...`);
-
-        } catch (error) {
-            console.error('Error obteniendo datos:', error);
-            hasMore = false;
-        }
+      console.log(`
+      =====================================
+      Usuario: ${user.id}
+      Health Factor: ${healthFactor.toFixed(4)}
+      Colateral Total: $${totalCollateralUSD.toLocaleString()}
+      Deuda Total: $${totalDebtUSD.toLocaleString()}
+      Número de préstamos: ${user.borrowedReservesCount}
+      
+      Posiciones:
+      ${user.reserves.map(reserve => `
+        Token: ${reserve.reserve.symbol}
+        Balance: ${(parseFloat(reserve.currentATokenBalance) / 1e18).toFixed(4)}
+        Deuda Variable: ${(parseFloat(reserve.currentVariableDebt) / 1e18).toFixed(4)}
+        Deuda Estable: ${(parseFloat(reserve.currentStableDebt) / 1e18).toFixed(4)}
+      `).join('\n')}
+      =====================================
+      `);
     }
 
-    return positions;
+    return data.users;
+  } catch (error) {
+    console.error('Error obteniendo posiciones:', error);
+    return [];
+  }
 }
 
-// Función para monitorear continuamente
-async function startPositionMonitoring(interval = 60000) { // 1 minuto por defecto
-    console.log('Iniciando monitoreo de posiciones...');
-    
-    setInterval(async () => {
-        try {
-            const riskyPositions = await getAllPositions();
-            console.log(`
-            ====== Resumen de Monitoreo ======
-            Posiciones en riesgo encontradas: ${riskyPositions.length}
-            Timestamp: ${new Date().toISOString()}
-            ================================
-            `);
-        } catch (error) {
-            console.error('Error en el monitoreo:', error);
-        }
-    }, interval);
+async function startMonitoring(interval = 60000) {
+  console.log('Iniciando monitoreo de posiciones en riesgo...');
+  
+  // Primera ejecución inmediata
+  await getRiskyPositions();
+  
+  // Monitoreo continuo
+  setInterval(async () => {
+    console.log('\nActualizando datos...');
+    await getRiskyPositions();
+  }, interval);
 }
 
-// Ejecutar el monitoreo
 async function main() {
-    // Obtener posiciones una vez
-    const positions = await getAllPositions();
-    console.log(`Total de posiciones en riesgo encontradas: ${positions.length}`);
-
-    // Iniciar monitoreo continuo
-    await startPositionMonitoring();
+  await startMonitoring();
 }
 
 main().catch((error) => {
-    console.error(error);
-    process.exit(1);
+  console.error(error);
+  process.exit(1);
 }); 
