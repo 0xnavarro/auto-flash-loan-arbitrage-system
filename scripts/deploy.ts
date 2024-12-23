@@ -1,126 +1,95 @@
 import { ethers, run } from "hardhat";
-import { config } from "dotenv";
-
-config();
-
-interface NetworkAddresses {
-  aavePool: string;
-  dexA: string;
-  dexB: string;
-  stargateRouter: string;
-}
-
-// Direcciones de contratos en diferentes redes
-const ADDRESSES: { [key: string]: NetworkAddresses } = {
-  arbitrum: {
-    aavePool: "0x794a61358D6845594F94dc1DB02A252b5b4814aD",
-    dexA: "0x1b02dA8Cb0d097eB8D57A175b88c7D8b47997506", // SushiSwap
-    dexB: "0xc873fEcbd354f5A56E00E710B90EF4201db2448d",  // Camelot
-    stargateRouter: "0x53Bf833A5d6c4ddA888F69c22C88C9f356a41614"
-  },
-  base: {
-    aavePool: "0xA238Dd80C259a72e81d7e4664a9801593F98d1c5",
-    dexA: "0x327Df1E6de05895d2ab08513aaDD9313Fe505d86", // BaseSwap
-    dexB: "0x8c1A3cF8f83074169fe5D7aD50B978e1cD6b37c7", // SwapBased
-    stargateRouter: "0x45f1A95A4D3f3836523F5c83673c797f4d4d263B"
-  },
-  bsc: {
-    aavePool: "0x116F3E0F45E37dF7c3d75312B1DE505F8b53cc9C",
-    dexA: "0x10ED43C718714eb63d5aA57B78B54704E256024E", // PancakeSwap
-    dexB: "0x3a6d8cA21D1CF76F653A67577FA0D27453350dD8",  // BiSwap
-    stargateRouter: "0x4a364f8c717cAAD9A442737Eb7b8A55cc6cf18D8"
-  }
-};
 
 async function main() {
-  // Obtener signer
-  const [deployer] = await ethers.getSigners();
-  console.log("Desplegando contratos con la cuenta:", deployer.address);
+  console.log("Iniciando despliegue del contrato FlashLoanArbitrage...");
 
-  // Obtener balance inicial
-  const balance = await deployer.provider.getBalance(deployer.address);
-  console.log("Balance de la cuenta:", ethers.formatEther(balance), "ETH");
+  // Direcciones de Aave V3 Pool Address Provider
+  const AAVE_POOL_PROVIDER = {
+    arbitrum: "0xa97684ead0e402dC232d5A977953DF7ECBaB3CDb",
+    base: "0xe20fCBdBfFC4Dd138cE8b2E6FBb6CB49777ad64D"
+  };
 
-  // Obtener network
+  // Direcciones de Uniswap V3 SwapRouter
+  const UNISWAP_ROUTER = {
+    arbitrum: "0xE592427A0AEce92De3Edee1F18E0157C05861564",
+    base: "0xE592427A0AEce92De3Edee1F18E0157C05861564"
+  };
+
+  // Obtener la red actual
   const network = await ethers.provider.getNetwork();
-  const chainId = Number(network.chainId);
-  console.log("Network:", network.name, "ChainId:", chainId);
+  const networkName = network.name;
 
-  // Seleccionar direcciones según la red
-  let addresses: NetworkAddresses;
-  if (chainId === 42161) {
-    addresses = ADDRESSES.arbitrum;
-  } else if (chainId === 8453) {
-    addresses = ADDRESSES.base;
-  } else if (chainId === 56) {
-    addresses = ADDRESSES.bsc;
-  } else {
-    throw new Error("Red no soportada");
-  }
+  console.log(`Desplegando en la red: ${networkName}`);
 
-  // Desplegar IntraChainArbitrage
-  console.log("\nDesplegando IntraChainArbitrage...");
-  const IntraChainArbitrage = await ethers.getContractFactory("IntraChainArbitrage");
-  const intraChainArbitrage = await IntraChainArbitrage.deploy(
-    addresses.aavePool,
-    addresses.dexA,
-    addresses.dexB
+  // Seleccionar las direcciones correctas según la red
+  const poolProvider = networkName === "arbitrum" ? AAVE_POOL_PROVIDER.arbitrum : AAVE_POOL_PROVIDER.base;
+  const swapRouter = networkName === "arbitrum" ? UNISWAP_ROUTER.arbitrum : UNISWAP_ROUTER.base;
+
+  // Desplegar el contrato
+  const FlashLoanArbitrage = await ethers.getContractFactory("FlashLoanArbitrage");
+  console.log("Desplegando contrato...");
+  
+  const flashLoanArbitrage = await FlashLoanArbitrage.deploy(
+    poolProvider,
+    swapRouter,
+    {
+      gasLimit: 3000000 // Añadimos un límite de gas explícito
+    }
   );
-  await intraChainArbitrage.waitForDeployment();
-  console.log("IntraChainArbitrage desplegado en:", await intraChainArbitrage.getAddress());
 
-  // Desplegar CrossChainArbitrage
-  console.log("\nDesplegando CrossChainArbitrage...");
-  const CrossChainArbitrage = await ethers.getContractFactory("CrossChainArbitrage");
-  const crossChainArbitrage = await CrossChainArbitrage.deploy(
-    addresses.aavePool,
-    addresses.dexA,
-    addresses.stargateRouter
-  );
-  await crossChainArbitrage.waitForDeployment();
-  console.log("CrossChainArbitrage desplegado en:", await crossChainArbitrage.getAddress());
+  console.log("Esperando confirmación del despliegue...");
+  await flashLoanArbitrage.waitForDeployment();
 
-  // Verificar contratos en el explorador
-  if (process.env.ETHERSCAN_API_KEY) {
-    console.log("\nVerificando contratos...");
+  const contractAddress = await flashLoanArbitrage.getAddress();
+  console.log(`Contrato FlashLoanArbitrage desplegado en: ${contractAddress}`);
+
+  // Esperar unos segundos para asegurarnos que el contrato está bien desplegado
+  console.log("Esperando 30 segundos para asegurar la propagación en la red...");
+  await new Promise(resolve => setTimeout(resolve, 30000));
+
+  console.log("Despliegue completado!");
+  console.log("----------------------------------------");
+  console.log("Resumen del Despliegue:");
+  console.log(`Red: ${networkName}`);
+  console.log(`Dirección del Contrato: ${contractAddress}`);
+  console.log(`Pool Provider: ${poolProvider}`);
+  console.log(`Swap Router: ${swapRouter}`);
+  console.log("----------------------------------------");
+
+  // Verificar el contrato en el explorador
+  if (process.env.VERIFY_CONTRACT === "true") {
+    console.log("Verificando contrato en el explorador...");
     try {
-      await verifyContract(await intraChainArbitrage.getAddress(), [
-        addresses.aavePool,
-        addresses.dexA,
-        addresses.dexB
-      ]);
-      console.log("IntraChainArbitrage verificado");
-
-      await verifyContract(await crossChainArbitrage.getAddress(), [
-        addresses.aavePool,
-        addresses.dexA,
-        addresses.stargateRouter
-      ]);
-      console.log("CrossChainArbitrage verificado");
+      await run("verify:verify", {
+        address: contractAddress,
+        constructorArguments: [poolProvider, swapRouter],
+      });
+      console.log("Contrato verificado exitosamente!");
     } catch (error) {
-      console.error("Error al verificar contratos:", error);
+      console.log("Error en la verificación:", error);
     }
   }
 
-  // Imprimir resumen
-  console.log("\nResumen del despliegue:");
-  console.log("------------------------");
-  console.log("Network:", network.name);
-  console.log("IntraChainArbitrage:", await intraChainArbitrage.getAddress());
-  console.log("CrossChainArbitrage:", await crossChainArbitrage.getAddress());
-  console.log("------------------------");
-}
+  // Guardar la dirección del contrato en un archivo para futuro uso
+  const fs = require('fs');
+  const deployInfo = {
+    network: networkName,
+    contractAddress,
+    poolProvider,
+    swapRouter,
+    deploymentDate: new Date().toISOString()
+  };
 
-async function verifyContract(address: string, constructorArguments: any[]) {
-  await run("verify:verify", {
-    address,
-    constructorArguments,
-  });
+  fs.writeFileSync(
+    `deployment-${networkName}.json`,
+    JSON.stringify(deployInfo, null, 2)
+  );
+  console.log(`Información del despliegue guardada en deployment-${networkName}.json`);
 }
 
 main()
   .then(() => process.exit(0))
   .catch((error) => {
-    console.error(error);
+    console.error("Error en el despliegue:", error);
     process.exit(1);
   }); 

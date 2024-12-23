@@ -1,21 +1,9 @@
 import { HardhatUserConfig } from "hardhat/config";
 import "@nomicfoundation/hardhat-toolbox";
+import "@typechain/hardhat";
 import { config as dotenvConfig } from "dotenv";
-import { resolve } from "path";
 
-// Cargar variables de entorno
-dotenvConfig({ path: resolve(__dirname, ".env") });
-
-// Verificar variables de entorno requeridas
-const ALCHEMY_API_KEY = process.env.ALCHEMY_API_KEY;
-if (!ALCHEMY_API_KEY) {
-  throw new Error("Please set your ALCHEMY_API_KEY in a .env file");
-}
-
-const PRIVATE_KEY = process.env.PRIVATE_KEY;
-if (!PRIVATE_KEY) {
-  throw new Error("Please set your PRIVATE_KEY in a .env file");
-}
+dotenvConfig();
 
 const config: HardhatUserConfig = {
   solidity: {
@@ -30,28 +18,33 @@ const config: HardhatUserConfig = {
   networks: {
     hardhat: {
       forking: {
-        url: `https://arb-mainnet.g.alchemy.com/v2/${ALCHEMY_API_KEY}`,
-        blockNumber: 160645867 // Bloque específico de Arbitrum
+        url: process.env.ARBITRUM_RPC_URL || "",
+        enabled: true
       }
     },
     arbitrum: {
-      url: `https://arb-mainnet.g.alchemy.com/v2/${ALCHEMY_API_KEY}`,
-      accounts: [PRIVATE_KEY]
+      url: process.env.ARBITRUM_RPC_URL || "",
+      accounts: process.env.PRIVATE_KEY ? [process.env.PRIVATE_KEY] : [],
+      chainId: 42161
     },
     base: {
-      url: "https://mainnet.base.org",
-      accounts: [PRIVATE_KEY]
-    },
-    bsc: {
-      url: "https://bsc-dataseed.binance.org",
-      accounts: [PRIVATE_KEY]
+      url: process.env.BASE_RPC_URL || "",
+      accounts: process.env.PRIVATE_KEY ? [process.env.PRIVATE_KEY] : [],
+      chainId: 8453
     }
   },
   etherscan: {
-    apiKey: process.env.ETHERSCAN_API_KEY
+    apiKey: {
+      arbitrumOne: process.env.ARBISCAN_API_KEY || "",
+      base: process.env.BASESCAN_API_KEY || ""
+    }
   },
-  mocha: {
-    timeout: 100000
+  sourcify: {
+    enabled: true
+  },
+  typechain: {
+    outDir: "typechain-types",
+    target: "ethers-v6"
   }
 };
 

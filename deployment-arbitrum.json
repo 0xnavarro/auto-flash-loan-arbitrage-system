@@ -1,0 +1,7 @@
+{
+  "network": "arbitrum",
+  "contractAddress": "0x7fca7C822b78329c92F1d115479027a17a023d14",
+  "poolProvider": "0xa97684ead0e402dC232d5A977953DF7ECBaB3CDb",
+  "swapRouter": "0xE592427A0AEce92De3Edee1F18E0157C05861564",
+  "deploymentDate": "2024-12-22T23:52:59.240Z"
+}

@@ -1,0 +1,7 @@
+{
+  "network": "base",
+  "contractAddress": "0x220437cACADBD8A182AcAaff1B0181aC10818aE0",
+  "poolProvider": "0xe20fCBdBfFC4Dd138cE8b2E6FBb6CB49777ad64D",
+  "swapRouter": "0xE592427A0AEce92De3Edee1F18E0157C05861564",
+  "deploymentDate": "2024-12-23T00:00:10.231Z"
+}

@@ -1,4 +1,22 @@
 // SPDX-License-Identifier: MIT
+/*
+███    ██  █████  ██    ██  █████  ██████  ██████   ██████  
+████   ██ ██   ██ ██    ██ ██   ██ ██   ██ ██   ██ ██    ██ 
+██ ██  ██ ███████ ██    ██ ███████ ██████  ██████  ██    ██ 
+██  ██ ██ ██   ██  ██  ██  ██   ██ ██   ██ ██   ██ ██    ██ 
+██   ████ ██   ██   ████   ██   ██ ██   ██ ██   ██  ██████  
+                                                    
+        ╭──────────────╮
+        │     ___      │
+        │    [^_^]     │
+        │   /|__|\\    │
+        │    d  b      │
+        ╰──────────────╯
+
+Flash Loan Arbitrage Contract v1.0
+Developed by C. Navarro
+*/
+
 pragma solidity ^0.8.20;
 
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
@@ -7,20 +25,19 @@ import "@openzeppelin/contracts/utils/math/Math.sol";
 import "@aave/core-v3/contracts/flashloan/base/FlashLoanSimpleReceiverBase.sol";
 import "@aave/core-v3/contracts/interfaces/IPoolAddressesProvider.sol";
 import "@aave/core-v3/contracts/interfaces/IPool.sol";
-import "@uniswap/v2-periphery/contracts/interfaces/IUniswapV2Router02.sol";
-import "@uniswap/v2-core/contracts/interfaces/IUniswapV2Factory.sol";
-import "@uniswap/v2-core/contracts/interfaces/IUniswapV2Pair.sol";
+import "@uniswap/v3-core/contracts/interfaces/IUniswapV3Pool.sol";
+import "@uniswap/v3-periphery/contracts/interfaces/ISwapRouter.sol";
+import "@uniswap/v3-periphery/contracts/libraries/TransferHelper.sol";
 
 contract FlashLoanArbitrage is FlashLoanSimpleReceiverBase, Ownable {
     using Math for uint256;
     
-    // Direcciones de los DEX que vamos a utilizar
-    address public dexA;
-    address public dexB;
+    // Pools de Uniswap V3 que vamos a utilizar
+    IUniswapV3Pool public poolA;
+    IUniswapV3Pool public poolB;
     
-    // Interfaces de los routers
-    IUniswapV2Router02 public immutable dexARouter;
-    IUniswapV2Router02 public immutable dexBRouter;
+    // Router de Uniswap V3
+    ISwapRouter public immutable swapRouter;
     
     // Evento para registrar arbitrajes exitosos
     event ArbitrageExecuted(
@@ -29,67 +46,108 @@ contract FlashLoanArbitrage is FlashLoanSimpleReceiverBase, Ownable {
         uint256 profit
     );
     
+    // Eventos para debugging
+    event SwapStarted(address tokenIn, address tokenOut, uint256 amount);
+    event SwapCompleted(address tokenIn, address tokenOut, uint256 amountIn, uint256 amountOut);
+    event FlashLoanReceived(address token, uint256 amount, uint256 premium);
+    event ArbitrageStarted(address tokenIn, address tokenOut, bool isPoolAFirst);
+    event AmountsCalculated(
+        uint256 flashLoanAmount,
+        uint256 flashLoanFee,
+        uint256 firstSwapAmount,
+        uint256 secondSwapAmount,
+        uint256 minRequiredAmount,
+        uint256 actualReceivedAmount
+    );
+    
     constructor(
         address _addressProvider,
-        address _dexA,
-        address _dexB
+        address _swapRouter
     ) FlashLoanSimpleReceiverBase(IPoolAddressesProvider(_addressProvider)) Ownable(msg.sender) {
-        dexA = _dexA;
-        dexB = _dexB;
-        dexARouter = IUniswapV2Router02(_dexA);
-        dexBRouter = IUniswapV2Router02(_dexB);
+        swapRouter = ISwapRouter(_swapRouter);
     }
 
     /**
-     * @notice Ejecuta el arbitraje entre DEXs
-     * @param tokenIn Dirección del token de entrada
-     * @param tokenOut Dirección del token de salida
-     * @param amount Cantidad a intercambiar
+     * @notice Configura las pools para el arbitraje
+     */
+    function configurePools(
+        address _poolA,
+        address _poolB
+    ) external onlyOwner {
+        poolA = IUniswapV3Pool(_poolA);
+        poolB = IUniswapV3Pool(_poolB);
+    }
+
+    /**
+     * @notice Ejecuta el arbitraje entre pools
      */
     function _executeArbitrage(
         address tokenIn,
         address tokenOut,
-        uint256 amount
+        uint256 amount,
+        bool isPoolAFirst
     ) internal returns (uint256) {
-        // Aprobar tokens para el primer DEX
-        IERC20(tokenIn).approve(address(dexARouter), amount);
+        emit SwapStarted(tokenIn, tokenOut, amount);
         
-        // Path para el swap
-        address[] memory path = new address[](2);
-        path[0] = tokenIn;
-        path[1] = tokenOut;
+        // Aprobar tokens para el router
+        TransferHelper.safeApprove(tokenIn, address(swapRouter), amount);
         
-        // Ejecutar swap en DEX A
-        uint256[] memory amountsFromA = dexARouter.swapExactTokensForTokens(
-            amount,
-            0, // Acepta cualquier cantidad (se ajustará después)
-            path,
-            address(this),
-            block.timestamp
+        // Calcular slippage máximo (0.5%)
+        uint256 minAmountOut = amount * 995 / 1000;
+        
+        // Parámetros para el primer swap
+        ISwapRouter.ExactInputSingleParams memory params = ISwapRouter.ExactInputSingleParams({
+            tokenIn: tokenIn,
+            tokenOut: tokenOut,
+            fee: isPoolAFirst ? poolA.fee() : poolB.fee(),
+            recipient: address(this),
+            deadline: block.timestamp + 300, // 5 minutos
+            amountIn: amount,
+            amountOutMinimum: minAmountOut,
+            sqrtPriceLimitX96: 0
+        });
+        
+        // Primer swap (compra)
+        uint256 amountOut = swapRouter.exactInputSingle(params);
+        emit SwapCompleted(tokenIn, tokenOut, amount, amountOut);
+        
+        // Calcular slippage para el segundo swap
+        uint256 minAmountOutFinal = amount + ((amount * 5) / 10000); // amount + 0.05% (fee de Aave)
+        
+        // Aprobar para el segundo swap
+        TransferHelper.safeApprove(tokenOut, address(swapRouter), amountOut);
+        
+        emit SwapStarted(tokenOut, tokenIn, amountOut);
+        
+        // Parámetros para el swap de vuelta (venta)
+        params.tokenIn = tokenOut;
+        params.tokenOut = tokenIn;
+        params.fee = isPoolAFirst ? poolB.fee() : poolA.fee();
+        params.amountIn = amountOut;
+        params.amountOutMinimum = minAmountOutFinal;
+        
+        // Segundo swap
+        uint256 finalAmount = swapRouter.exactInputSingle(params);
+        emit SwapCompleted(tokenOut, tokenIn, amountOut, finalAmount);
+        
+        // Emitir evento con todos los montos para debugging
+        emit AmountsCalculated(
+            amount,                    // Monto del flash loan
+            (amount * 5) / 10000,      // Fee del flash loan (0.05%)
+            amountOut,                 // Monto recibido del primer swap
+            finalAmount,               // Monto recibido del segundo swap
+            minAmountOutFinal,         // Monto mínimo necesario
+            finalAmount                // Monto actual recibido
         );
         
-        // Aprobar tokens para el segundo DEX
-        IERC20(tokenOut).approve(address(dexBRouter), amountsFromA[1]);
+        // Verificar que obtuvimos suficiente para repagar el préstamo
+        require(finalAmount >= minAmountOutFinal, "Too little received");
         
-        // Invertir el path para el swap de vuelta
-        address[] memory pathBack = new address[](2);
-        pathBack[0] = tokenOut;
-        pathBack[1] = tokenIn;
-        
-        // Ejecutar swap en DEX B
-        uint256[] memory amountsFromB = dexBRouter.swapExactTokensForTokens(
-            amountsFromA[1],
-            0, // Acepta cualquier cantidad
-            pathBack,
-            address(this),
-            block.timestamp
-        );
-        
-        return amountsFromB[1];
+        return finalAmount;
     }
 
     /**
-     * @notice Ejecuta la operación del flash loan
+     * @notice Callback de Aave para el flash loan
      */
     function executeOperation(
         address asset,
@@ -98,24 +156,23 @@ contract FlashLoanArbitrage is FlashLoanSimpleReceiverBase, Ownable {
         address initiator,
         bytes calldata params
     ) external override returns (bool) {
-        // Decodificar los parámetros
-        (address tokenOut) = abi.decode(params, (address));
+        emit FlashLoanReceived(asset, amount, premium);
         
-        // Ejecutar el arbitraje
-        uint256 amountReceived = _executeArbitrage(asset, tokenOut, amount);
+        // Decodificar parámetros
+        (address tokenOut, bool isPoolAFirst) = abi.decode(params, (address, bool));
+        emit ArbitrageStarted(asset, tokenOut, isPoolAFirst);
         
-        // Calcular el beneficio
+        // Ejecutar arbitraje
+        uint256 amountReceived = _executeArbitrage(asset, tokenOut, amount, isPoolAFirst);
+        
+        // Verificar beneficio
         uint256 amountToRepay = amount + premium;
-        require(
-            amountReceived >= amountToRepay,
-            "Insufficient funds to repay flash loan"
-        );
+        require(amountReceived >= amountToRepay, "Insufficient funds to repay flash loan");
         
-        // Calcular y emitir evento de beneficio
-        uint256 profit = amountReceived - amountToRepay;
-        emit ArbitrageExecuted(asset, tokenOut, profit);
+        // Emitir evento de beneficio
+        emit ArbitrageExecuted(asset, tokenOut, amountReceived - amountToRepay);
         
-        // Aprobar el repago
+        // Aprobar repago
         IERC20(asset).approve(address(POOL), amountToRepay);
         
         return true;
@@ -123,36 +180,38 @@ contract FlashLoanArbitrage is FlashLoanSimpleReceiverBase, Ownable {
 
     /**
      * @notice Inicia el flash loan para arbitraje
-     * @param asset Token que queremos pedir prestado
-     * @param amount Cantidad a pedir prestada
-     * @param tokenOut Token contra el que queremos hacer arbitraje
      */
     function requestFlashLoan(
         address asset,
         uint256 amount,
-        address tokenOut
+        address tokenOut,
+        bool isPoolAFirst
     ) external onlyOwner {
-        bytes memory params = abi.encode(tokenOut);
+        require(address(poolA) != address(0) && address(poolB) != address(0), "Pools not configured");
+        
+        bytes memory params = abi.encode(tokenOut, isPoolAFirst);
         POOL.flashLoanSimple(
             address(this),
             asset,
             amount,
             params,
-            0 // referral code
+            0
         );
     }
 
     /**
-     * @notice Función para retirar tokens
+     * @notice Retira tokens del contrato
      */
-    function withdrawToken(address token) external onlyOwner {
+    function withdrawToken(
+        address token
+    ) external onlyOwner {
         uint256 balance = IERC20(token).balanceOf(address(this));
         require(balance > 0, "No balance to withdraw");
         IERC20(token).transfer(owner(), balance);
     }
 
     /**
-     * @notice Función para retirar ETH
+     * @notice Retira ETH del contrato
      */
     function withdrawETH() external onlyOwner {
         uint256 balance = address(this).balance;
@@ -160,106 +219,5 @@ contract FlashLoanArbitrage is FlashLoanSimpleReceiverBase, Ownable {
         payable(owner()).transfer(balance);
     }
 
-    // Función para recibir ETH
     receive() external payable {}
-
-    // Verificar la salud del token
-    function checkTokenSafety(address tokenAddress) external view returns (bool) {
-        // Verificar que el token implementa la interfaz ERC20
-        try IERC20(tokenAddress).totalSupply() returns (uint256) {
-            return true;
-        } catch {
-            return false;
-        }
-    }
-
-    // Calcular el tamaño óptimo del trade
-    function calculateOptimalTradeSize(uint256 liquidityUSD) external pure returns (uint256) {
-        return Math.min(liquidityUSD / 10, 10000); // Máximo 10k USD, 10% de la liquidez
-    }
-
-    struct ArbitrageParams {
-        uint256 amountIn;
-        uint256 expectedProfit;
-        uint256 gasPrice;
-        uint256 gasLimit;
-    }
-
-    // Calcular si el arbitraje es rentable
-    function calculateArbitrageProfitability(
-        address tokenIn,
-        address tokenOut,
-        uint256 amount
-    ) external view returns (ArbitrageParams memory) {
-        // Obtener precios de ambos DEX
-        address[] memory path = new address[](2);
-        path[0] = tokenIn;
-        path[1] = tokenOut;
-
-        // Precio en DEX A
-        uint256[] memory amountsA = dexARouter.getAmountsOut(amount, path);
-        
-        // Precio en DEX B
-        uint256[] memory amountsB = dexBRouter.getAmountsOut(amount, path);
-
-        // Calcular diferencia de precios
-        uint256 priceA = (amountsA[1] * 1e18) / amount;
-        uint256 priceB = (amountsB[1] * 1e18) / amount;
-        
-        // Calcular beneficio potencial
-        uint256 profit;
-        uint256 optimalAmount;
-        
-        if (priceA > priceB) {
-            // Comprar en B, vender en A
-            profit = ((priceA - priceB) * amount) / 1e18;
-            optimalAmount = calculateOptimalAmount(amount, priceB, priceA);
-        } else {
-            // Comprar en A, vender en B
-            profit = ((priceB - priceA) * amount) / 1e18;
-            optimalAmount = calculateOptimalAmount(amount, priceA, priceB);
-        }
-
-        // Estimar costos de gas
-        uint256 gasPrice = tx.gasprice;
-        uint256 gasLimit = 300000; // Estimado para la transacción completa
-        uint256 gasCost = gasPrice * gasLimit;
-
-        // Calcular beneficio neto
-        uint256 flashLoanFee = (amount * 9) / 10000; // 0.09% fee de Aave
-        uint256 netProfit = profit > (gasCost + flashLoanFee) ? 
-            profit - (gasCost + flashLoanFee) : 0;
-
-        return ArbitrageParams({
-            amountIn: optimalAmount,
-            expectedProfit: netProfit,
-            gasPrice: gasPrice,
-            gasLimit: gasLimit
-        });
-    }
-
-    // Calcular el tamaño óptimo del préstamo
-    function calculateOptimalAmount(
-        uint256 baseAmount,
-        uint256 buyPrice,
-        uint256 sellPrice
-    ) internal pure returns (uint256) {
-        // Fórmula para maximizar el beneficio considerando el impacto en el precio
-        // Usamos una aproximación conservadora para evitar slippage excesivo
-        uint256 priceSpread = sellPrice - buyPrice;
-        uint256 optimalAmount;
-
-        if (priceSpread > 0) {
-            // Calculamos el tamaño óptimo basado en la profundidad del mercado
-            // y el spread de precios
-            optimalAmount = (baseAmount * priceSpread) / buyPrice;
-            
-            // Limitamos el tamaño para evitar demasiado slippage
-            if (optimalAmount > baseAmount * 3) {
-                optimalAmount = baseAmount * 3;
-            }
-        }
-
-        return optimalAmount;
-    }
 } 

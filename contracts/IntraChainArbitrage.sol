@@ -7,7 +7,8 @@ import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import "@openzeppelin/contracts/utils/math/Math.sol";
 import "@aave/core-v3/contracts/flashloan/base/FlashLoanSimpleReceiverBase.sol";
 import "@aave/core-v3/contracts/interfaces/IPoolAddressesProvider.sol";
-import "@uniswap/v2-periphery/contracts/interfaces/IUniswapV2Router02.sol";
+import "@uniswap/v3-periphery/contracts/interfaces/ISwapRouter.sol";
+import "./interfaces/IQuoterV2.sol";
 
 contract IntraChainArbitrage is FlashLoanSimpleReceiverBase, Ownable, ReentrancyGuard {
     using Math for uint256;
@@ -16,8 +17,11 @@ contract IntraChainArbitrage is FlashLoanSimpleReceiverBase, Ownable, Reentrancy
     uint256 private constant AAVE_FEE = 5; // Base 10000
     
     // DEX routers
-    IUniswapV2Router02 public immutable dexA;
-    IUniswapV2Router02 public immutable dexB;
+    ISwapRouter public immutable dexA;
+    ISwapRouter public immutable dexB;
+    
+    // Quoter
+    IQuoterV2 public immutable quoter;
     
     // Eventos
     event ArbitrageExecuted(
@@ -36,10 +40,12 @@ contract IntraChainArbitrage is FlashLoanSimpleReceiverBase, Ownable, Reentrancy
     constructor(
         address _addressProvider,
         address _dexA,
-        address _dexB
+        address _dexB,
+        address _quoter
     ) FlashLoanSimpleReceiverBase(IPoolAddressesProvider(_addressProvider)) Ownable(msg.sender) {
-        dexA = IUniswapV2Router02(_dexA);
-        dexB = IUniswapV2Router02(_dexB);
+        dexA = ISwapRouter(_dexA);
+        dexB = ISwapRouter(_dexB);
+        quoter = IQuoterV2(_quoter);
     }
 
     /**
@@ -54,21 +60,19 @@ contract IntraChainArbitrage is FlashLoanSimpleReceiverBase, Ownable, Reentrancy
         // Aprobar tokens para el DEX
         IERC20(tokenIn).approve(address(dexA), amount);
         
-        // Path para el swap
-        address[] memory path = new address[](2);
-        path[0] = tokenIn;
-        path[1] = tokenOut;
-        
         // Ejecutar swap
-        uint256[] memory amounts = dexA.swapExactTokensForTokens(
-            amount,
-            minAmountOut,
-            path,
-            address(this),
-            block.timestamp
-        );
+        ISwapRouter.ExactInputSingleParams memory params = ISwapRouter.ExactInputSingleParams({
+            tokenIn: tokenIn,
+            tokenOut: tokenOut,
+            fee: 3000, // 0.3%
+            recipient: address(this),
+            deadline: block.timestamp,
+            amountIn: amount,
+            amountOutMinimum: minAmountOut,
+            sqrtPriceLimitX96: 0
+        });
         
-        return amounts[amounts.length - 1];
+        return dexA.exactInputSingle(params);
     }
 
     /**
@@ -83,31 +87,29 @@ contract IntraChainArbitrage is FlashLoanSimpleReceiverBase, Ownable, Reentrancy
         // Aprobar tokens para el DEX
         IERC20(tokenIn).approve(address(dexB), amount);
         
-        // Path para el swap
-        address[] memory path = new address[](2);
-        path[0] = tokenIn;
-        path[1] = tokenOut;
-        
         // Ejecutar swap
-        uint256[] memory amounts = dexB.swapExactTokensForTokens(
-            amount,
-            minAmountOut,
-            path,
-            address(this),
-            block.timestamp
-        );
+        ISwapRouter.ExactInputSingleParams memory params = ISwapRouter.ExactInputSingleParams({
+            tokenIn: tokenIn,
+            tokenOut: tokenOut,
+            fee: 3000, // 0.3%
+            recipient: address(this),
+            deadline: block.timestamp,
+            amountIn: amount,
+            amountOutMinimum: minAmountOut,
+            sqrtPriceLimitX96: 0
+        });
         
-        return amounts[amounts.length - 1];
+        return dexB.exactInputSingle(params);
     }
 
     /**
-     * @notice Callback de Aave para el flash loan
+     * @notice Callback de Aave para ejecutar la lógica del flash loan
      */
     function executeOperation(
         address asset,
         uint256 amount,
         uint256 premium,
-        address initiator,
+        address,
         bytes calldata params
     ) external override returns (bool) {
         // Decodificar parámetros
@@ -116,11 +118,10 @@ contract IntraChainArbitrage is FlashLoanSimpleReceiverBase, Ownable, Reentrancy
             bool dexAToB,
             uint256 minAmountOut
         ) = abi.decode(params, (address, bool, uint256));
-
-        // Ejecutar arbitraje
+        
         uint256 amountReceived;
         uint256 finalAmount;
-
+        
         if (dexAToB) {
             // Comprar en DEX A, vender en DEX B
             amountReceived = _swapExactTokensInDexA(
@@ -129,7 +130,7 @@ contract IntraChainArbitrage is FlashLoanSimpleReceiverBase, Ownable, Reentrancy
                 amount,
                 minAmountOut
             );
-
+            
             finalAmount = _swapExactTokensInDexB(
                 tokenOut,
                 asset,
@@ -144,7 +145,7 @@ contract IntraChainArbitrage is FlashLoanSimpleReceiverBase, Ownable, Reentrancy
                 amount,
                 minAmountOut
             );
-
+            
             finalAmount = _swapExactTokensInDexA(
                 tokenOut,
                 asset,
@@ -152,16 +153,16 @@ contract IntraChainArbitrage is FlashLoanSimpleReceiverBase, Ownable, Reentrancy
                 amount + premium
             );
         }
-
+        
         // Verificar beneficio
         require(
             finalAmount >= amount + premium,
             "Insufficient profit"
         );
-
+        
         // Aprobar repago del flash loan
         IERC20(asset).approve(address(POOL), amount + premium);
-
+        
         // Emitir evento
         emit ArbitrageExecuted(
             asset,
@@ -170,7 +171,7 @@ contract IntraChainArbitrage is FlashLoanSimpleReceiverBase, Ownable, Reentrancy
             finalAmount - (amount + premium),
             block.timestamp
         );
-
+        
         return true;
     }
 
@@ -214,58 +215,69 @@ contract IntraChainArbitrage is FlashLoanSimpleReceiverBase, Ownable, Reentrancy
     }
 
     /**
-     * @notice Calcula el beneficio potencial
+     * @notice Calcula el beneficio potencial del arbitraje
      */
     function calculateArbitrage(
         address tokenIn,
         address tokenOut,
         uint256 amount
-    ) external view returns (uint256 profit, bool dexAToB) {
-        // Path para el swap
-        address[] memory path = new address[](2);
-        path[0] = tokenIn;
-        path[1] = tokenOut;
-
-        // Obtener precios en ambos DEX
-        uint256[] memory amountsDexA = dexA.getAmountsOut(amount, path);
-        uint256[] memory amountsDexB = dexB.getAmountsOut(amount, path);
-
-        // Calcular mejor ruta
-        uint256 profitAToB;
-        uint256 profitBToA;
-
+    ) external returns (uint256 profit, bool dexAToB) {
+        uint256 profitAToB = 0;
+        uint256 profitBToA = 0;
+        
         // Ruta A -> B
-        if (amountsDexA[1] > amountsDexB[1]) {
-            path[0] = tokenOut;
-            path[1] = tokenIn;
-            uint256[] memory amountsBack = dexB.getAmountsOut(amountsDexA[1], path);
-            if (amountsBack[1] > amount) {
-                profitAToB = amountsBack[1] - amount;
-            }
+        uint256 amountOutA = _getAmountOut(dexA, tokenIn, tokenOut, amount);
+        uint256 amountOutB = _getAmountOut(dexB, tokenOut, tokenIn, amountOutA);
+        if (amountOutB > amount) {
+            profitAToB = amountOutB - amount;
         }
-
+        
         // Ruta B -> A
-        if (amountsDexB[1] > amountsDexA[1]) {
-            path[0] = tokenOut;
-            path[1] = tokenIn;
-            uint256[] memory amountsBack = dexA.getAmountsOut(amountsDexB[1], path);
-            if (amountsBack[1] > amount) {
-                profitBToA = amountsBack[1] - amount;
-            }
+        uint256 amountOutB2 = _getAmountOut(dexB, tokenIn, tokenOut, amount);
+        uint256 amountOutA2 = _getAmountOut(dexA, tokenOut, tokenIn, amountOutB2);
+        if (amountOutA2 > amount) {
+            profitBToA = amountOutA2 - amount;
         }
-
+        
         // Calcular costos
         uint256 aaveFee = (amount * AAVE_FEE) / 10000;
         uint256 estimatedGas = 0.005 ether; // ~500k gas
-
+        
         // Determinar mejor ruta
         if (profitAToB > profitBToA && profitAToB > (aaveFee + estimatedGas)) {
             return (profitAToB - (aaveFee + estimatedGas), true);
         } else if (profitBToA > (aaveFee + estimatedGas)) {
             return (profitBToA - (aaveFee + estimatedGas), false);
         }
-
+        
         return (0, false);
+    }
+
+    /**
+     * @notice Obtiene el amount out estimado para un swap
+     */
+    function _getAmountOut(
+        ISwapRouter router,
+        address tokenIn,
+        address tokenOut,
+        uint256 amountIn
+    ) internal returns (uint256) {
+        try quoter.quoteExactInputSingle(
+            tokenIn,
+            tokenOut,
+            3000, // 0.3% fee tier
+            amountIn,
+            0
+        ) returns (
+            uint256 amountOut,
+            uint160 sqrtPriceX96After,
+            uint32 initializedTicksCrossed,
+            uint256 gasEstimate
+        ) {
+            return amountOut;
+        } catch {
+            return 0;
+        }
     }
 
     /**
