@@ -38,19 +38,23 @@
     "@aave/core-v3": "^1.19.3",
     "@ethersproject/bignumber": "^5.7.0",
     "@ethersproject/units": "^5.7.0",
-    "@nomiclabs/hardhat-ethers": "^2.2.3",
-    "@types/big.js": "^6.2.2",
     "@types/node": "^22.10.2",
-    "@uniswap/sdk-core": "^6.1.1",
     "@uniswap/v2-core": "^1.0.1",
     "@uniswap/v2-periphery": "^1.1.0-beta.0",
     "@uniswap/v3-core": "^1.0.1",
     "@uniswap/v3-periphery": "^1.4.4",
-    "@uniswap/v3-sdk": "^3.19.0",
-    "alchemy-sdk": "^3.5.0",
-    "big.js": "^6.2.2",
-    "colors": "^1.4.0",
-    "graphql": "16.8.1",
-    "graphql-request": "7.1.2"
+    "colors": "^1.4.0"
+  },
+  "overrides": {
+    "lodash": "^4.18.1",
+    "tmp": "^0.2.7",
+    "ws@8": "^8.23.0",
+    "serialize-javascript": "^7.1.4",
+    "cookie": "^0.7.2",
+    "bn.js@4": "^4.12.3",
+    "diff@5": "^5.2.2",
+    "diff@7": "^8.0.3",
+    "glob@10": "^14.0.6",
+    "minimatch@9": "^11.0.9"
   }
 }
